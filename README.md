@@ -13,6 +13,7 @@ This suite is engineered to run with **zero downtime** and is fully hardened to 
 * 🔄 **Integrated Auto-Update Sequence:** Optional mechanism to fetch container updates right after a successful backup. Supports custom compose filenames and legacy/modern Docker environments.
 * 🌐 **Universal SMB Support:** Dynamically mounts any SMB share via `cifs-utils` and unmounts it safely after transfer.
 * 🧹 **Smart Retention Management:** Automated local, remote (SMB), and log-file cleanup using rolling date-based logic. Set any value to `0` to keep files indefinitely.
+* 🧹 **Automated Production Sweep:** Automatically detects and purges temporary database backup artifacts (`db_*.sqlite3`) from the active container production directory right after staging to prevent storage accumulation.
 * 📋 **Timestamped Log Rotation:** Generates clean, timestamped individual log files per run, preventing a single giant log file and allowing precise, retention-based cleanup.
 * 🚨 **Dependency Pre-Flight Check:** Verifies if required CLI tools (`7z`, `openssl`, `cifs-utils`) are available *before* altering any filesystem states.
 
@@ -166,13 +167,76 @@ To automate the script to run seamlessly every night at **03:00 AM**, add it to 
 
 ---
 
-## How to Restore / Extract Backups
+## How to Restore / Extract Backups (Decryption Guide)
 
 ⚠️ **CRITICAL COMPATIBILITY NOTE FOR WINDOWS USERS:**
-Files encrypted via OpenSSL (`.enc`) cannot be opened directly by native archive managers or the 7-Zip GUI. You must strip the OpenSSL encryption layer via the CLI first before extracting the internal archive.
+Files encrypted via OpenSSL (`.enc`) cannot be opened directly by native archive managers or the 7-Zip desktop GUI. Attempting to force-extract an encrypted file layer using standard Windows environments will throw validation or header corruption errors. 
 
-### Decryption Phase (If ENCRYPT_BACKUP=true)
-Open your terminal (Git Bash, WSL, or Linux CLI), navigate to your backup folder, and decrypt the `.enc` container back into its native archive format:
+You **must strip the OpenSSL encryption layer via the CLI first** before extracting the internal archive.
+
+---
+
+### Option A: Decryption & Extraction under Windows
+
+To handle OpenSSL files under Windows, you have two native CLI options. Open your **Windows Terminal** and run the appropriate commands from your backup directory:
+
+#### 1. Using native Windows PowerShell (Recommended via Winget OpenSSL)
+If you installed the secure OpenSSL environment package via Windows Package Manager (`winget install ShiningLight.OpenSSL.Light`), you can execute the decryption routing directly inside your PowerShell tab using its absolute path setup:
+
+```powershell
+& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" enc -aes-256-cbc -d -pbkdf2 -in vaultwarden_backup_XYZ.7z.enc -out vaultwarden_backup_XYZ.7z
+```
+*(Note: Windows will ask you for your decryption password. Type it blindly—no asterisks or letters will be displayed on-screen—and press Enter).*
+
+#### 2. Using Git Bash
+If you are running Git Bash within your Windows Terminal environment, OpenSSL is already included in your default environment PATH variable:
 
 ```bash
 openssl enc -aes-256-cbc -d -pbkdf2 -in vaultwarden_backup_XYZ.7z.enc -out vaultwarden_backup_XYZ.7z
+```
+
+#### 3. Extraction (Windows)
+Once the command finishes executing, a standard `vaultwarden_backup_XYZ.7z` container file will appear on your disk. You can now right-click this file ➡️ **7-Zip** ➡️ **Extract to...** to retrieve your data directory layout cleanly.
+
+---
+
+### Option B: Decryption & Extraction under Linux
+
+Open your Linux shell terminal (e.g., Ubuntu, Debian, or Raspberry Pi OS), navigate to your backup repository path, and execute the clean multi-stage recovery pipeline:
+
+#### 1. Decrypt the container structure
+```bash
+openssl enc -aes-256-cbc -d -pbkdf2 -in vaultwarden_backup_XYZ.7z.enc -out vaultwarden_backup_XYZ.7z
+```
+
+#### 2. Extract based on your configured ARCHIVE_FORMAT
+
+* **For 7z Format (Default):**
+  ```bash
+  7z x vaultwarden_backup_XYZ.7z -o/path/to/restore/
+  ```
+* **For ZIP Format:**
+  ```bash
+  7z x vaultwarden_backup_XYZ.zip -o/path/to/restore/
+  ```
+* **For TAR.GZ Format (Streamlined single-line decryption & extraction):**
+  ```bash
+  openssl enc -aes-256-cbc -d -pbkdf2 -in vaultwarden_backup_XYZ.tar.gz.enc | tar -xzf - -C /path/to/restore/
+  ```
+
+---
+
+## AI Transparency & Acknowledgments
+
+In the spirit of openness and transparency within the open-source community, please note that this backup script and its documentation were developed and optimized with the assistance of **Google Gemini**. The core logic, edge-case handling (like database locking and container recovery), and security constraints were engineered iteratively using AI assistance to achieve a highly reliable and robust infrastructure tool.
+
+---
+
+## License
+
+This project is open-source and available under the [MIT License](LICENSE).
+
+## Disclaimer
+
+*This script is provided "as is", without warranty of any kind, express or implied. Always verify your backups manually to ensure data integrity.*
+```
