@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ==========================================
 # CONFIGURATION BLOCK
 # ==========================================
-SOURCE_DIR="/path/to/your/vw-data" # Verified Vaultwarden data directory on the host
+SOURCE_DIR="/opt/stacks/vaultwarden/vw-data" # Verified Vaultwarden data directory on the host
 TMP_DIR="/tmp/vw_backup_tmp"               # Temporary directory for staging
 LOCAL_BACKUP_DIR="/var/backups/vaultwarden" # Local backup storage on the host
 MOUNT_POINT="/mnt/smb_backup"              # Temporary mount point on the host
@@ -40,7 +40,7 @@ SMB_SHARE="//192.168.1.X/your-backup-share" # Target SMB share path (No trailing
 # Docker Settings
 CONTAINER_NAME="vaultwarden"               # Name of your Vaultwarden container
 USE_COMPOSE=false                          # Set to true for Docker Compose, false for plain Docker
-COMPOSE_DIR="/path/to/your/compose/folder"      # Path to your compose folder (if USE_COMPOSE=true)
+COMPOSE_DIR="/opt/stacks/vaultwarden"      # Path to your compose folder (if USE_COMPOSE=true)
 COMPOSE_FILE="compose.yaml"                # Name of your file (e.g., compose.yaml, docker-compose.yml)
 COMPOSE_ENV_FILE=""                        # Optional: Name of your environment file (e.g., .env). Leave empty if not used.
 
@@ -115,7 +115,9 @@ check_status() {
         
         # Emergency Cleanup
         rm -rf "$TMP_DIR"
-        docker exec "$CONTAINER_NAME" rm -f /data/db_backup.sqlite3 > /dev/null 2>&1
+        if [ -n "$DETECTED_BACKUP" ]; then
+            rm -f "$SOURCE_DIR/$DETECTED_BACKUP"
+        fi
         if mountpoint -q "$MOUNT_POINT"; then
             umount "$MOUNT_POINT"
         fi
@@ -258,6 +260,13 @@ log_message "INFO" "Executing container-native Vaultwarden online backup..."
 run_cmd "docker exec $CONTAINER_NAME /vaultwarden backup"
 check_status $? "Failed to execute container-native Vaultwarden backup wrapper."
 
+# Dynamically capture the newly created timestamped database file (newest one)
+DETECTED_BACKUP=$(basename "$(ls -t "$SOURCE_DIR"/db_*.sqlite3 2>/dev/null | head -n 1)")
+
+if [ -z "$DETECTED_BACKUP" ]; then
+    check_status 1 "Could not locate the generated database backup file (db_*.sqlite3) in $SOURCE_DIR."
+fi
+
 # 3. Copy Vaultwarden data to temporary staging directory
 log_message "INFO" "Copying data files to staging area..."
 run_cmd "cp -R '$SOURCE_DIR/.' '$TMP_DIR/'"
@@ -285,14 +294,15 @@ if [ "$USE_COMPOSE" = true ]; then
     fi
 fi
 
-# 4. Clean up the live container database artifact and finalize staging structure
-run_cmd "docker exec $CONTAINER_NAME rm -f /data/db_backup.sqlite3"
-check_status $? "Failed to remove database backup artifact inside container."
-
-if [ -f "$TMP_DIR/db_backup.sqlite3" ]; then
-    run_cmd "mv '$TMP_DIR/db_backup.sqlite3' '$TMP_DIR/db.sqlite3'"
+# 4. Finalize staging structure by applying the clean container-native hot-backup
+if [ -f "$TMP_DIR/$DETECTED_BACKUP" ]; then
+    run_cmd "mv '$TMP_DIR/$DETECTED_BACKUP' '$TMP_DIR/db.sqlite3'"
     check_status $? "Failed to rename hot-backup database file in staging area."
 fi
+
+# AUTOMATED SWEEP: Purge ANY temp database backup artifacts from live production folder to prevent disk accumulation
+run_cmd "find '$SOURCE_DIR' -maxdepth 1 -type f -name 'db_*.sqlite3' -delete"
+check_status $? "Failed to purge database backup artifacts from production directory."
 
 # 4.1 HARDENING: Remove live WAL and SHM files from staging area to prevent restore corruption
 if [ -f "$TMP_DIR/db.sqlite3-wal" ] || [ -f "$TMP_DIR/db.sqlite3-shm" ]; then
