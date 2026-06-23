@@ -156,13 +156,13 @@ Apply strict Linux file permissions. The secrets file needs to be readable exclu
 To automate the script to run seamlessly every night at **03:00 AM**, add it to the root crontab scheduler.
 
 1. Open the root system crontab:
-    
+    ```
     sudo crontab -e
-
+    ```
 2. Append the following line to the very bottom:
-
+    ```
     0 3 * * * /opt/scripts/vaultwarden_backup.sh
-
+    ```
 > **Note:** Using the root crontab (`sudo crontab`) is required because the script file permissions are restricted to the `root` user (`700`) and it requires root privileges to execute native Linux `mount` protocols for SMB pipelines.
 
 ---
