@@ -239,4 +239,3 @@ This project is open-source and available under the [MIT License](LICENSE).
 ## Disclaimer
 
 *This script is provided "as is", without warranty of any kind, express or implied. Always verify your backups manually to ensure data integrity.*
-```
