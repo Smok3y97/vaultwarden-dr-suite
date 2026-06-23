@@ -6,7 +6,7 @@ This suite is engineered to run with **zero downtime** and is fully hardened to 
 
 ## Features
 
-* 🔒 **Zero-Downtime Hot Backup:** Leverages SQLite's native `.backup` online feature inside the running container, ensuring data consistency across all tables and active write-ahead log (`-wal`) state pools without stopping Vaultwarden.
+* 🔒 **Zero-Downtime Hot Backup:** Leverages Vaultwarden's native built-in backup CLI wrapper (`/vaultwarden backup`). The application securely invokes its internal SQLite C-library layer to flush active transactional segments directly from memory into a perfectly compiled, standalone database snapshot—ensuring 100% data consistency without stopping the container.
 * 📦 **Flexible Formats:** Supports native `.7z` (Default - maximum compression), standard `.zip`, or traditional Linux `.tar.gz`.
 * 🛡️ **Hardened Process-Safe Encryption:** Optional AES-256 password protection. Multi-stage encryption processes pass secrets exclusively via environment memory layers to OpenSSL, leaving passwords completely invisible to system monitoring tools like `ps aux` or `htop`.
 * 🔑 **Secrets Isolation:** Uses a separate local configuration secrets file (`chmod 600`) to store SMB credentials and the archive encryption password completely outside the main script logic.
@@ -53,7 +53,7 @@ Standard database file copies on a live container often trigger data corruption 
 
 To resolve this challenge completely without freezing your infrastructure, this script executes a specialized, multi-stage processing routine:
 
-1. **The Online Checkpoint:** The script invokes a native safe-snapshot loop inside the running container (`sqlite3 .backup`). SQLite safely flushes the active WAL cache segments into memory, consolidates uncommitted queries, and renders a fully compiled, standalone file copy named `db_backup.sqlite3`.
+1. **The Online Checkpoint:** The script invokes Vaultwarden's native backup routine inside the running container (`/vaultwarden backup`). The application flushes the active WAL cache segments, consolidates uncommitted queries via its internal C-library database layers, and renders a fully compiled, standalone file copy named `db_backup.sqlite3` inside the data directory.
 2. **The Staging Layer Copy:** A standard local recursive copy (`cp -R`) clones your assets, key infrastructures (`rsa_key.pem`, `config.json`), attachments, and the freshly minted database snapshot into the temporary staging area (`TMP_DIR`).
 3. **The WAL/SHM Clean Artifact Purge:** Because the recursive clone copies everything in the directory block, the raw live environment's active `db.sqlite3-wal` and `db.sqlite3-shm` files are pulled into staging as well. **The script explicitly targets and purges these two specific files from the staging cache before triggering compression.**
 4. **Infrastructure & Environment Configuration Capture:** If your ecosystem is running via Docker Compose (`USE_COMPOSE=true`), the script automatically locates your specified configuration file (e.g., `compose.yaml`). Furthermore, if you pass your variables (`ADMIN_TOKEN`, database or SMTP passwords) via an external environment declaration file (`COMPOSE_ENV_FILE`), the script maps this file explicitly and pulls it into the root staging layer. Both files are safely included inside the final archive layer.
@@ -169,51 +169,10 @@ To automate the script to run seamlessly every night at **03:00 AM**, add it to 
 ## How to Restore / Extract Backups
 
 ⚠️ **CRITICAL COMPATIBILITY NOTE FOR WINDOWS USERS:**
-The Windows built-in Compressed Folders utility (File Explorer) **does not support AES-256 encrypted containers at all** (neither `.zip` nor `.7z` nor `.enc`). Attempting to extract an encrypted file layer using standard Windows environments will throw validation errors. 
-
-To successfully decrypt and restore your files on Windows, you **must use a dedicated third-party archive manager** like [7-Zip](https://www.7-zip.org) or WinRAR.
+Files encrypted via OpenSSL (`.enc`) cannot be opened directly by native archive managers or the 7-Zip GUI. You must strip the OpenSSL encryption layer via the CLI first before extracting the internal archive.
 
 ### Decryption Phase (If ENCRYPT_BACKUP=true)
-All encrypted backups output as an active `.enc` package to protect the command line execution space. Decrypt the file back into its native format first:
+Open your terminal (Git Bash, WSL, or Linux CLI), navigate to your backup folder, and decrypt the `.enc` container back into its native archive format:
 
-* **Linux / CLI:** `openssl enc -aes-256-cbc -d -pbkdf2 -pass pass:"YourPassword" -in vaultwarden_backup_XYZ.7z.enc -out vaultwarden_backup_XYZ.7z`
-* **Windows:** Open the `.enc` file layer using the **7-Zip desktop UI** and extract the internal archive package by supplying your master password.
-
-### Extraction Phase
-
-#### 1. 7z Format (Default)
-* **Linux / CLI:** `7z x backup_file.7z -o/path/to/restore/`
-* **Windows:** Right-click the file ➡️ *7-Zip* ➡️ *Extract to...* (Enter your password when prompted).
-*(Note: Windows 11 can open unencrypted `.7z` archives natively; encrypted versions strictly require the 7-Zip desktop app).*
-
-#### 2. ZIP Format
-* **Linux / CLI:** `7z x backup_file.zip -o/path/to/restore/`
-* **Windows:** Right-click the file ➡️ *7-Zip* ➡️ *Extract to...* (Enter your password when prompted).
-*(Do not use the native Windows "Extract All" wizard, as it fails on AES-256).*
-
-#### 3. TAR.GZ Format
-* **Linux / CLI (Unencrypted):** `tar -xzf backup_file.tar.gz -C /path/to/restore/`
-* **Linux / CLI (Encrypted .tar.gz.enc):**
-    ```bash
-    openssl enc -aes-256-cbc -d -pbkdf2 -pass pass:"YourPassword" -in backup_file.tar.gz.enc | tar -xzf - -C /path/to/restore/
-    ```
-* **Windows Compatibility:** Yes, you can open this on Windows using **7-Zip**! 
-  1. If encrypted, decrypt it first using OpenSSL (or use 7-Zip to extract the `.enc` layer).
-  2. Open the `.tar.gz` file with 7-Zip to extract the `.tar` archive.
-  3. Open the resulting `.tar` file with 7-Zip a second time to extract the final data folder.
-
----
-
-## AI Transparency & Acknowledgments
-
-In the spirit of openness and transparency within the open-source community, please note that this backup script and its documentation were developed and optimized with the assistance of **Google Gemini**. The core logic, edge-case handling (like database locking and container recovery), and security constraints were engineered iteratively using AI assistance to achieve a highly reliable and robust infrastructure tool.
-
----
-
-## License
-
-This project is open-source and available under the [MIT License](LICENSE).
-
-## Disclaimer
-
-*This script is provided "as is", without warranty of any kind, express or implied. Always verify your backups manually to ensure data integrity.*
+```bash
+openssl enc -aes-256-cbc -d -pbkdf2 -in vaultwarden_backup_XYZ.7z.enc -out vaultwarden_backup_XYZ.7z
