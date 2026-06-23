@@ -28,18 +28,20 @@
 # Dynamically resolve the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Directories & Paths
-SOURCE_DIR="/path/to/your/vw-data"         # Vaultwarden data directory on the host
+# ==========================================
+# CONFIGURATION BLOCK
+# ==========================================
+SOURCE_DIR="/path/to/your/vw-data" # Verified Vaultwarden data directory on the host
 TMP_DIR="/tmp/vw_backup_tmp"               # Temporary directory for staging
 LOCAL_BACKUP_DIR="/var/backups/vaultwarden" # Local backup storage on the host
 MOUNT_POINT="/mnt/smb_backup"              # Temporary mount point on the host
-SMB_SHARE="//192.168.1.X/your-backup-share" # target SMB share path
+SMB_SHARE="//192.168.1.X/your-backup-share" # Target SMB share path (No trailing slash!)
 
 # Docker Settings
 CONTAINER_NAME="vaultwarden"               # Name of your Vaultwarden container
 USE_COMPOSE=false                          # Set to true for Docker Compose, false for plain Docker
-COMPOSE_DIR="/path/to/your/compose/folder" # Only needed if USE_COMPOSE=true
-COMPOSE_FILE="compose.yaml"                # Name of your file (e.g., compose.yaml, docker-compose.yml, vaultwarden.yaml)
+COMPOSE_DIR="/path/to/your/compose/folder"      # Path to your compose folder (if USE_COMPOSE=true)
+COMPOSE_FILE="compose.yaml"                # Name of your file (e.g., compose.yaml, docker-compose.yml)
 COMPOSE_ENV_FILE=""                        # Optional: Name of your environment file (e.g., .env). Leave empty if not used.
 
 # Archive & Encryption Settings
@@ -58,6 +60,9 @@ ENABLE_LOGGING=true                        # Set to true to enable logging to a 
 KEEP_LOG_DAYS=14                           # Days logs remain before deletion (0 to keep forever)
 LOG_ONLY_ERRORS=true                       # Set to true to log errors only, false for verbose output
 
+# ==========================================
+# SYSTEM VARIABLES & LOGGING SETUP
+# ==========================================
 # Secrets File Path (Contains SMB login & archive password)
 BACKUP_CRED_FILE="$SCRIPT_DIR/vaultwarden_backup.secrets" 
 
@@ -75,9 +80,6 @@ fi
 ERR_LOG=$(mktemp)
 HAS_ERRORS=0
 
-# ==========================================
-# LOGGING REDIRECTION & ROTATION
-# ==========================================
 if [ "$ENABLE_LOGGING" = true ]; then
     if [ "$KEEP_LOG_DAYS" -gt 0 ] && [ -d "$(dirname "$LOG_FILE")" ]; then
         find "$(dirname "$LOG_FILE")" -type f -name "vaultwarden_backup_*.log" -mtime +$KEEP_LOG_DAYS -delete
@@ -102,7 +104,7 @@ log_message() {
 }
 
 # ==========================================
-# ERROR HANDLING FUNCTION
+# CORE AUXILIARY FUNCTIONS
 # ==========================================
 check_status() {
     local status=$1
@@ -117,17 +119,20 @@ check_status() {
         if mountpoint -q "$MOUNT_POINT"; then
             umount "$MOUNT_POINT"
         fi
-        rm -f "$ERR_LOG"
         
         END_DATE=$(date)
         if [ "$LOG_ONLY_ERRORS" = true ] && [ "$ENABLE_LOGGING" = true ]; then
             {
                 echo "=== Backup ABORTED WITH ERRORS at $END_DATE ==="
                 echo "--- Captured Error Log ---"
-                cat "$ERR_LOG"
+                if [ -f "$ERR_LOG" ]; then
+                    cat "$ERR_LOG"
+                fi
                 echo "--------------------------"
             } >> "$LOG_FILE"
         fi
+        
+        rm -f "$ERR_LOG"
         exit 1
     fi
 }
@@ -234,7 +239,6 @@ fi
 # ==========================================
 # START OF THE BACKUP PROCESS
 # ==========================================
-
 START_DATE=$(date)
 log_message "INFO" "=== Backup started at $START_DATE ==="
 
@@ -249,18 +253,15 @@ check_status $? "Failed to create local backup directory ($LOCAL_BACKUP_DIR)."
 run_cmd "mkdir -p '$MOUNT_POINT'"
 check_status $? "Failed to create mount point ($MOUNT_POINT)."
 
-
-# 2. Hot-Backup: SQLite Online Backup inside the running container (Zero Downtime)
-log_message "INFO" "Executing hot SQLite online backup inside container..."
-run_cmd "docker exec $CONTAINER_NAME sqlite3 /data/db.sqlite3 '.backup /data/db_backup.sqlite3'"
-check_status $? "Failed to execute online SQLite backup inside container."
-
+# 2. Hot-Backup: Native built-in Vaultwarden backup command (Zero Downtime)
+log_message "INFO" "Executing container-native Vaultwarden online backup..."
+run_cmd "docker exec $CONTAINER_NAME /vaultwarden backup"
+check_status $? "Failed to execute container-native Vaultwarden backup wrapper."
 
 # 3. Copy Vaultwarden data to temporary staging directory
 log_message "INFO" "Copying data files to staging area..."
 run_cmd "cp -R '$SOURCE_DIR/.' '$TMP_DIR/'"
 check_status $? "Failed to copy data from $SOURCE_DIR to staging directory."
-
 
 # 3.1 Infrastructure Backup: Include Docker Compose file and optional environment file if enabled
 if [ "$USE_COMPOSE" = true ]; then
@@ -284,7 +285,6 @@ if [ "$USE_COMPOSE" = true ]; then
     fi
 fi
 
-
 # 4. Clean up the live container database artifact and finalize staging structure
 run_cmd "docker exec $CONTAINER_NAME rm -f /data/db_backup.sqlite3"
 check_status $? "Failed to remove database backup artifact inside container."
@@ -301,7 +301,6 @@ if [ -f "$TMP_DIR/db.sqlite3-wal" ] || [ -f "$TMP_DIR/db.sqlite3-shm" ]; then
     check_status $? "Failed to remove WAL/SHM artifacts from staging area."
 fi
 
-
 # 5. Compress and stage archive (Unencrypted intermediate file)
 log_message "INFO" "Compressing backup files ($ARCHIVE_FORMAT)..."
 cd "$TMP_DIR" || check_status $? "Failed to enter temporary staging directory."
@@ -316,7 +315,6 @@ elif [ "$ARCHIVE_FORMAT" = "tar.gz" ]; then
     run_cmd "tar -czf '$LOCAL_BACKUP_DIR/$BACKUP_NAME.tmp' ."
     check_status $? "Failed to create tar.gz archive."
 fi
-
 
 # 6. Secure Encryption Layer via OpenSSL (Hides password from process list)
 if [ "$ENCRYPT_BACKUP" = true ]; then
@@ -333,12 +331,10 @@ else
     check_status $? "Failed to finalize unencrypted backup archive name."
 fi
 
-
 # 7. Clean up temporary staging files (We move out of the directory before deleting it!)
 cd "$SCRIPT_DIR" || cd /
 run_cmd "rm -rf '$TMP_DIR'"
 check_status $? "Failed to clean up staging directory."
-
 
 # 8. Mount SMB share via Credentials File, transfer backup, and apply Remote Retention
 log_message "INFO" "Connecting to SMB share securely..."
@@ -364,7 +360,6 @@ if mountpoint -q "$MOUNT_POINT"; then
 else
     check_status 1 "Secure connection to SMB share failed. Mount point is unavailable."
 fi
-
 
 # 9. Clean up old local backups on the host
 if [ "$KEEP_LOCAL_DAYS" -gt 0 ]; then
@@ -416,7 +411,9 @@ if [ "$LOG_ONLY_ERRORS" = true ] && [ "$ENABLE_LOGGING" = true ]; then
         {
             echo "=== Backup finished WITH ERRORS at $END_DATE ==="
             echo "--- Captured Error Log ---"
-            cat "$ERR_LOG"
+            if [ -f "$ERR_LOG" ]; then
+                cat "$ERR_LOG"
+            fi
             echo "--------------------------"
         } >> "$LOG_FILE"
     else
